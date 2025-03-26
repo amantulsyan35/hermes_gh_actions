@@ -11,15 +11,15 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: "18"
 
@@ -46,10 +46,11 @@ jobs:
           # Execute SQL from the SQLite file
           wrangler d1 execute ${{ secrets.DATABASE_NAME }} --file data/transcripts.sqlite
 
-      - name: Upload transcripts as artifacts
-        if: success() && hashFiles('data/transcripts.json') != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: transcripts
-          path: data/transcripts.json
-          retention-days: 7
+      # If you want to keep the artifact upload, uncomment the below:
+      # - name: Upload transcripts as artifacts
+      #   if: success() && hashFiles('data/transcripts.json') != ''
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: transcripts
+      #     path: data/transcripts.json
+      #     retention-days: 7
