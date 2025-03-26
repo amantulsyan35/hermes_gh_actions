@@ -6,14 +6,14 @@ import time
 import sqlite3
 import tempfile
 import re
-import sys
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
 # Configuration
 API_ENDPOINT = os.environ.get("API_ENDPOINT", "https://open-source-content.xyz/v1")
+CLOUDFLARE_API_TOKEN = os.environ.get("CLOUDFLARE_API_TOKEN")
+CLOUDFLARE_ACCOUNT_ID = os.environ.get("CLOUDFLARE_ACCOUNT_ID")
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "youtube_transcripts")
-DB_FILE = "transcripts.sqlite"  # Local SQLite database file
 PAGE_SIZE = 20
 RATE_LIMIT_SLEEP = 20  # Sleep time in seconds when rate limited
 
@@ -101,30 +101,58 @@ def fetch_all_youtube_videos():
 
 def get_existing_video_ids():
     """Get list of video IDs already in the database."""
-    try:
-        # Create database connection
-        if not os.path.exists(DB_FILE):
-            # If database doesn't exist yet, there are no existing IDs
+    # Create a temporary wrangler config
+    with tempfile.NamedTemporaryFile(suffix='.json', mode='w') as config_file:
+        wrangler_config = {
+            "d1_databases": [
+                {
+                    "binding": "DB",
+                    "database_name": DATABASE_NAME,
+                    "database_id": f"{CLOUDFLARE_ACCOUNT_ID}/{DATABASE_NAME}"
+                }
+            ]
+        }
+        json.dump(wrangler_config, config_file)
+        config_file.flush()
+        
+        # Use Wrangler to get existing video IDs
+        try:
+            command = [
+                "wrangler",
+                "d1",
+                "execute",
+                DATABASE_NAME,
+                "--command", "SELECT video_id FROM transcripts",
+                "--json",
+                "--config", config_file.name
+            ]
+            
+            env = os.environ.copy()
+            env["CLOUDFLARE_API_TOKEN"] = CLOUDFLARE_API_TOKEN
+            env["CLOUDFLARE_ACCOUNT_ID"] = CLOUDFLARE_ACCOUNT_ID
+            
+            result = subprocess.run(
+                command, 
+                env=env, 
+                capture_output=True, 
+                text=True
+            )
+            
+            if result.returncode != 0:
+                print(f"Error getting existing video IDs: {result.stderr}")
+                return set()
+            
+            try:
+                data = json.loads(result.stdout)
+                # Extract video_id from results
+                return set(row["video_id"] for row in data.get("results", []))
+            except json.JSONDecodeError:
+                print(f"Error parsing JSON: {result.stdout}")
+                return set()
+                
+        except Exception as e:
+            print(f"Error getting existing video IDs: {str(e)}")
             return set()
-        
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
-        
-        # Check if table exists
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='transcripts'")
-        if not cursor.fetchone():
-            conn.close()
-            return set()
-        
-        # Get video IDs
-        cursor.execute("SELECT video_id FROM transcripts")
-        video_ids = set(row[0] for row in cursor.fetchall())
-        conn.close()
-        
-        return video_ids
-    except Exception as e:
-        print(f"Error getting existing video IDs: {str(e)}")
-        return set()
 
 def fetch_transcript(video_id):
     """Fetch transcript for a YouTube video using yt-dlp."""
@@ -212,14 +240,15 @@ def parse_vtt_file(vtt_file):
     
     return transcript
 
-def store_in_local_database(transcripts):
-    """Store transcripts in local SQLite database."""
+def store_in_d1_database(transcripts):
+    """Store transcripts in Cloudflare D1 database."""
     if not transcripts:
         print("No transcripts to store.")
         return
     
-    try:
-        conn = sqlite3.connect(DB_FILE)
+    # Create a temporary SQLite database
+    with tempfile.NamedTemporaryFile(suffix='.sqlite') as temp_db:
+        conn = sqlite3.connect(temp_db.name)
         cursor = conn.cursor()
         
         # Create table if it doesn't exist
@@ -232,7 +261,6 @@ def store_in_local_database(transcripts):
         ''')
         
         # Insert or update transcripts
-        count = 0
         for transcript in transcripts:
             if transcript:
                 cursor.execute('''
@@ -243,17 +271,76 @@ def store_in_local_database(transcripts):
                     transcript["transcript"],
                     transcript["fetched_at"]
                 ))
-                count += 1
         
         conn.commit()
         conn.close()
-        print(f"Successfully stored {count} transcripts in local database.")
         
-    except Exception as e:
-        print(f"Error storing transcripts in local database: {str(e)}")
+        # Create a temporary wrangler config
+        with tempfile.NamedTemporaryFile(suffix='.json', mode='w') as config_file:
+            wrangler_config = {
+                "d1_databases": [
+                    {
+                        "binding": "DB",
+                        "database_name": DATABASE_NAME,
+                        "database_id": f"{CLOUDFLARE_ACCOUNT_ID}/{DATABASE_NAME}"
+                    }
+                ]
+            }
+            json.dump(wrangler_config, config_file)
+            config_file.flush()
+            
+            # Use Wrangler to upload the SQLite database to D1
+            try:
+                command = [
+                    "wrangler",
+                    "d1",
+                    "execute",
+                    DATABASE_NAME,
+                    "--file", temp_db.name,
+                    "--config", config_file.name
+                ]
+                
+                env = os.environ.copy()
+                env["CLOUDFLARE_API_TOKEN"] = CLOUDFLARE_API_TOKEN
+                env["CLOUDFLARE_ACCOUNT_ID"] = CLOUDFLARE_ACCOUNT_ID
+                
+                result = subprocess.run(command, env=env, check=True)
+                print(f"Successfully stored {len(transcripts)} transcripts in D1 database.")
+                
+            except subprocess.CalledProcessError as e:
+                print(f"Error storing transcripts in D1: {str(e)}")
 
 def main():
     try:
+        # Create D1 database table if it doesn't exist
+        with tempfile.NamedTemporaryFile(suffix='.json', mode='w') as config_file:
+            wrangler_config = {
+                "d1_databases": [
+                    {
+                        "binding": "DB",
+                        "database_name": DATABASE_NAME,
+                        "database_id": f"{CLOUDFLARE_ACCOUNT_ID}/{DATABASE_NAME}"
+                    }
+                ]
+            }
+            json.dump(wrangler_config, config_file)
+            config_file.flush()
+            
+            command = [
+                "wrangler",
+                "d1",
+                "execute",
+                DATABASE_NAME,
+                "--command", "CREATE TABLE IF NOT EXISTS transcripts (video_id TEXT PRIMARY KEY, transcript TEXT, fetched_at TEXT)",
+                "--config", config_file.name
+            ]
+            
+            env = os.environ.copy()
+            env["CLOUDFLARE_API_TOKEN"] = CLOUDFLARE_API_TOKEN
+            env["CLOUDFLARE_ACCOUNT_ID"] = CLOUDFLARE_ACCOUNT_ID
+            
+            subprocess.run(command, env=env, check=True)
+        
         # Fetch all YouTube videos from API
         print("Fetching YouTube videos from API...")
         videos = fetch_all_youtube_videos()
@@ -284,50 +371,14 @@ def main():
             if i < len(new_videos) - 1:  # Don't sleep after the last video
                 time.sleep(2)
         
-        # Store transcripts in local database
-        print(f"Storing {len(transcripts)} transcripts in local database...")
-        store_in_local_database(transcripts)
-        
-        # Export database to data directory for artifact storage
-        if transcripts:
-            os.makedirs("data", exist_ok=True)
-            
-            # Create a copy of the database in the data directory
-            with open(DB_FILE, 'rb') as src_file:
-                with open(os.path.join("data", "transcripts.sqlite"), 'wb') as dest_file:
-                    dest_file.write(src_file.read())
-            
-            print(f"Exported database to data/transcripts.sqlite")
-            
-            # Create a JSON export for easier viewing
-            export_to_json(transcripts)
-            
+        # Store transcripts in D1 database
+        print(f"Storing {len(transcripts)} transcripts in D1 database...")
+        store_in_d1_database(transcripts)
         print("Done!")
         
     except Exception as e:
         print(f"Error in main function: {str(e)}")
         raise
-
-def export_to_json(transcripts):
-    """Export transcripts to a JSON file for easier viewing."""
-    try:
-        os.makedirs("data", exist_ok=True)
-        
-        # Create JSON file with the transcripts
-        with open(os.path.join("data", "transcripts.json"), 'w', encoding='utf-8') as f:
-            json.dump(
-                {
-                    "count": len(transcripts),
-                    "transcripts": transcripts
-                }, 
-                f, 
-                indent=2, 
-                ensure_ascii=False
-            )
-        
-        print(f"Exported {len(transcripts)} transcripts to data/transcripts.json")
-    except Exception as e:
-        print(f"Error exporting transcripts to JSON: {str(e)}")
 
 if __name__ == "__main__":
     main()
