@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload transcripts as artifacts
         if: success() && hashFiles('data/transcripts.json') != ''
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: transcripts
           path: data/transcripts.json
