@@ -1,0 +1,32 @@
+name: YouTube Transcript Fetcher
+
+on:
+  schedule:
+    - cron: "0 0 * * *" # Run daily at midnight
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  fetch-and-store-transcripts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests yt-dlp wrangler
+
+      - name: Run transcript fetcher script
+        env:
+          API_ENDPOINT: "https://open-source-content.xyz/v1"
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          DATABASE_NAME: ${{ secrets.DATABASE_NAME }}
+        run: python scripts/fetch_transcripts.py
