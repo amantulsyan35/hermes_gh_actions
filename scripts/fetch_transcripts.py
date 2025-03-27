@@ -32,10 +32,11 @@ def extract_youtube_id(url):
 
 def fetch_youtube_videos():
     """
-    Fetch YouTube videos from the API.
-    Returns a list of video data.
+    Fetch YouTube video URLs from the API.
+    The API returns {"data": [url1, url2, ...]} where each URL is a string.
     """
     try:
+        print(f"Fetching from API endpoint: {API_ENDPOINT}")
         response = requests.get(API_ENDPOINT)
         
         # Handle rate limiting
@@ -49,34 +50,36 @@ def fetch_youtube_videos():
             print(f"Response: {response.text}")
             return []
         
+        # Parse JSON response
         data = response.json()
         
-        # Handle the format {"data": []}
-        videos_data = data.get("data", [])
+        # Get the array of YouTube URLs
+        youtube_urls = data.get("data", [])
+        print(f"Received {len(youtube_urls)} YouTube URLs from API")
         
-        # Process all videos (no need to filter for YouTube since all are YouTube)
+        # Process each URL to extract video information
         youtube_videos = []
-        for entry in videos_data:
-            url = entry.get("url", "")
+        
+        for url in youtube_urls:
             video_id = extract_youtube_id(url)
-            if video_id:  # Ensure we have a valid YouTube ID
+            if video_id:
                 youtube_videos.append({
                     "video_id": video_id,
-                    "title": entry.get("title", ""),
+                    "title": f"Video {video_id}",  # Default title, will be replaced with actual title from YouTube
                     "url": url,
-                    "created_time": entry.get("createdTime", ""),
-                    "content_type": "youtube",
-                    # Additional metadata if available
-                    "og_title": entry.get("ogTitle", ""),
-                    "og_description": entry.get("ogDescription", ""),
-                    "og_image": entry.get("ogImage", ""),
-                    "keywords": entry.get("keywords", "")
+                    "created_time": datetime.now(timezone.utc).isoformat(),
+                    "content_type": "youtube"
                 })
         
+        print(f"Extracted {len(youtube_videos)} valid YouTube video IDs")
         return youtube_videos
     
     except requests.RequestException as e:
         print(f"Error fetching from API: {str(e)}")
+        return []
+    except json.JSONDecodeError as e:
+        print(f"Error parsing API response as JSON: {str(e)}")
+        print(f"Raw response: {response.text[:200]}...")  # Print first 200 chars of response
         return []
 
 def get_all_youtube_videos():
