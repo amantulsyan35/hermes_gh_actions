@@ -43,3 +43,12 @@ jobs:
         env:
           API_ENDPOINT: "https://open-source-content.xyz/v1/youtube"
         run: python scripts/fetch_transcripts.py
+
+        # Add this after your existing steps
+      - name: Upload database
+        uses: actions/upload-artifact@v3
+        with:
+          name: database-files
+          path: |
+            content.sqlite
+            data/processed_videos.json
