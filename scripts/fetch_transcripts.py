@@ -15,6 +15,7 @@ DATABASE_NAME = os.environ.get("DATABASE_NAME", "youtube_transcripts")
 DB_FILE = "transcripts.sqlite"  # Local SQLite database file
 PAGE_SIZE = 20
 RATE_LIMIT_SLEEP = 20  # Sleep time in seconds when rate limited
+MAX_VIDEOS_TO_PROCESS = 5  # Only process the first 5 videos for testing
 
 def extract_youtube_id(url):
     """Extract YouTube video ID from a URL."""
@@ -92,6 +93,11 @@ def fetch_all_youtube_videos():
         videos, cursor, has_more = fetch_youtube_videos_from_api(cursor)
         all_videos.extend(videos)
         
+        # For testing, stop after collecting at least MAX_VIDEOS_TO_PROCESS videos
+        if len(all_videos) >= MAX_VIDEOS_TO_PROCESS:
+            print(f"Collected {len(all_videos)} videos, limiting to first {MAX_VIDEOS_TO_PROCESS} for testing")
+            return all_videos[:MAX_VIDEOS_TO_PROCESS]
+        
         # Respect rate limits
         if has_more:
             time.sleep(2)
@@ -130,7 +136,10 @@ def fetch_transcript(video_id):
     try:
         # Create temporary directory for output
         with tempfile.TemporaryDirectory() as temp_dir:
-            # Run yt-dlp to get the video info including subtitles
+            # Set up cookies path
+            cookies_path = os.path.expanduser("~/.config/yt-dlp/cookies.txt")
+            
+            # Build the command
             command = [
                 "yt-dlp",
                 f"https://www.youtube.com/watch?v={video_id}",
@@ -140,10 +149,24 @@ def fetch_transcript(video_id):
                 "--sub-format", "vtt",
                 "--convert-subs", "vtt",
                 "-o", os.path.join(temp_dir, "%(id)s"),
-                "--quiet"
+                "-v"  # Verbose output for debugging
             ]
             
-            subprocess.run(command, check=True)
+            # Add cookies if they exist
+            if os.path.exists(cookies_path):
+                command.extend(["--cookies", cookies_path])
+                print(f"Using cookies from: {cookies_path}")
+            else:
+                print("No cookies file found. YouTube might block the request.")
+            
+            # Run the command and capture output
+            result = subprocess.run(command, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"yt-dlp command failed with exit code {result.returncode}")
+                if result.stderr:
+                    print(f"Error output: {result.stderr}")
+                return None
             
             # Find the subtitle file
             subtitle_file = None
@@ -274,10 +297,12 @@ def export_to_json(transcripts):
 
 def main():
     try:
-        # Fetch all YouTube videos from API
+        print(f"*** TESTING MODE: Processing only first {MAX_VIDEOS_TO_PROCESS} videos ***")
+        
+        # Fetch YouTube videos from API
         print("Fetching YouTube videos from API...")
         videos = fetch_all_youtube_videos()
-        print(f"Found {len(videos)} YouTube videos")
+        print(f"Found {len(videos)} YouTube videos for testing")
         
         # Get list of videos already in database to avoid duplicates
         print("Getting list of videos already in database...")
@@ -287,6 +312,13 @@ def main():
         # Filter out videos that already have transcripts
         new_videos = [video for video in videos if video["video_id"] not in existing_video_ids]
         print(f"Found {len(new_videos)} new videos to process")
+        
+        # Check if cookies file exists
+        cookies_path = os.path.expanduser("~/.config/yt-dlp/cookies.txt")
+        if os.path.exists(cookies_path):
+            print(f"Found cookies file at {cookies_path}")
+        else:
+            print("WARNING: No cookies file found. YouTube might block the request.")
         
         # Fetch transcripts for each video
         transcripts = []
@@ -322,7 +354,7 @@ def main():
             # Create a JSON export for easier viewing
             export_to_json(transcripts)
             
-        print("Done!")
+        print("Test run completed!")
         
     except Exception as e:
         print(f"Error in main function: {str(e)}")
