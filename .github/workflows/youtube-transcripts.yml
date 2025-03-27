@@ -41,5 +41,5 @@ jobs:
 
       - name: Run transcript fetcher script
         env:
-          API_ENDPOINT: "https://open-source-content.xyz/v1"
+          API_ENDPOINT: "https://open-source-content.xyz/v1/youtube"
         run: python scripts/fetch_transcripts.py
