@@ -145,23 +145,31 @@ def fetch_youtube_metadata(video_id):
             
             # Parse JSON response
             try:
+                if not result.stdout.strip():
+                    print(f"Empty response from yt-dlp for {video_id}")
+                    return {}
+                    
                 metadata = json.loads(result.stdout)
+                print(f"Successfully fetched metadata for {video_id}")
                 
-                # Extract relevant fields
-                return {
+                # Extract relevant fields (only the ones we need for the simplified schema)
+                metadata_result = {
                     "channel_name": metadata.get("channel", ""),
-                    "channel_id": metadata.get("channel_id", ""),
                     "description": metadata.get("description", ""),
                     "duration": metadata.get("duration_string", ""),
-                    "view_count": metadata.get("view_count", 0),
-                    "like_count": metadata.get("like_count", 0),
-                    "dislike_count": metadata.get("dislike_count", 0),
-                    "comment_count": metadata.get("comment_count", 0),
-                    "publish_date": metadata.get("upload_date", ""),
-                    "keywords": metadata.get("tags", []),
                 }
-            except json.JSONDecodeError:
-                print(f"Error parsing metadata JSON for {video_id}")
+                
+                # Add these to metadata table fields
+                metadata_result["og_title"] = metadata.get("title", "")
+                metadata_result["og_description"] = metadata.get("description", "")
+                metadata_result["og_image"] = metadata.get("thumbnail", "")
+                metadata_result["keywords"] = metadata.get("tags", [])
+                
+                return metadata_result
+            except json.JSONDecodeError as e:
+                print(f"Error parsing metadata JSON for {video_id}: {str(e)}")
+                # Print the first 200 characters of the response for debugging
+                print(f"Response start: {result.stdout[:200]}")
                 return {}
                 
     except Exception as e:
@@ -365,56 +373,55 @@ def init_database():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
-        # Create tables if they don't exist
+        # Create tables if they don't exist - using the new schema
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS content (
-            url TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            url TEXT UNIQUE,
             content_type TEXT,
             title TEXT,
             created_at TEXT,
             consumed_at TEXT,
-            last_updated TEXT,
-            scrape_at TEXT
+            last_updated_at TEXT,
+            scraped_at TEXT,
+            is_scraped INTEGER DEFAULT 0
         )
         ''')
         
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS metadata (
-            url TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content_id INTEGER,
             og_title TEXT,
             og_description TEXT,
             og_image TEXT,
             keywords TEXT,
-            FOREIGN KEY (url) REFERENCES content(url)
+            FOREIGN KEY (content_id) REFERENCES content(id)
         )
         ''')
         
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS youtube (
-            url TEXT PRIMARY KEY,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content_id INTEGER,
+            url TEXT,
             video_id TEXT,
             channel_name TEXT,
-            channel_id TEXT,
             description TEXT,
             duration TEXT,
-            view_count INTEGER,
-            like_count INTEGER,
-            dislike_count INTEGER,
-            comment_count INTEGER,
-            publish_date TEXT,
-            FOREIGN KEY (url) REFERENCES content(url)
+            FOREIGN KEY (content_id) REFERENCES content(id)
         )
         ''')
         
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS transcript (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            url TEXT,
+            youtube_id INTEGER,
             full_text TEXT,
             language TEXT,
             duration REAL,
             fetched_at TEXT,
-            FOREIGN KEY (url) REFERENCES youtube(url)
+            FOREIGN KEY (youtube_id) REFERENCES youtube(id)
         )
         ''')
         
@@ -443,8 +450,10 @@ def init_database():
         
         # Create indices for performance
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_type ON content(content_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_content_url ON content(url)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_video_id ON youtube(video_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_transcript_url ON transcript(url)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_youtube_content_id ON youtube(content_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_transcript_youtube_id ON transcript(youtube_id)')
         
         conn.commit()
         return conn
@@ -460,62 +469,134 @@ def store_video_data(conn, video_data, metadata, transcript_data):
     try:
         cursor = conn.cursor()
         
-        # Insert into content table
-        cursor.execute('''
-        INSERT OR REPLACE INTO content (
-            url, content_type, title, created_at, last_updated, scrape_at
-        ) VALUES (?, ?, ?, ?, ?, ?)
-        ''', (
-            video_data["url"],
-            video_data["content_type"],
-            video_data["title"],
-            video_data["created_time"],
-            datetime.now(timezone.utc).isoformat(),
-            datetime.now(timezone.utc).isoformat()
-        ))
+        # Check if URL already exists in the database
+        cursor.execute("SELECT id FROM content WHERE url = ?", (video_data["url"],))
+        existing_content = cursor.fetchone()
         
-        # Insert into metadata table if we have metadata
-        if video_data.get("og_title") or video_data.get("og_description") or video_data.get("og_image") or video_data.get("keywords"):
+        is_scraped = 1 if transcript_data else 0
+        
+        if existing_content:
+            content_id = existing_content[0]
+            # Update existing content
             cursor.execute('''
-            INSERT OR REPLACE INTO metadata (
-                url, og_title, og_description, og_image, keywords
-            ) VALUES (?, ?, ?, ?, ?)
+            UPDATE content SET
+                content_type = ?,
+                title = ?,
+                last_updated_at = ?,
+                scraped_at = ?,
+                is_scraped = ?
+            WHERE id = ?
+            ''', (
+                video_data["content_type"],
+                video_data["title"],
+                datetime.now(timezone.utc).isoformat(),
+                datetime.now(timezone.utc).isoformat(),
+                is_scraped,
+                content_id
+            ))
+        else:
+            # Insert new content
+            cursor.execute('''
+            INSERT INTO content (
+                url, content_type, title, created_at, last_updated_at, scraped_at, is_scraped
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
                 video_data["url"],
-                video_data.get("og_title", ""),
-                video_data.get("og_description", ""),
-                video_data.get("og_image", ""),
-                json.dumps(video_data.get("keywords", "")) if isinstance(video_data.get("keywords"), (list, dict)) else video_data.get("keywords", "")
+                video_data["content_type"],
+                video_data["title"],
+                video_data["created_time"],
+                datetime.now(timezone.utc).isoformat(),
+                datetime.now(timezone.utc).isoformat(),
+                is_scraped
             ))
+            content_id = cursor.lastrowid
         
-        # Insert into youtube table
-        cursor.execute('''
-        INSERT OR REPLACE INTO youtube (
-            url, video_id, channel_name, channel_id, description, 
-            duration, view_count, like_count, dislike_count, comment_count, publish_date
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            video_data["url"],
-            video_data["video_id"],
-            metadata.get("channel_name", ""),
-            metadata.get("channel_id", ""),
-            metadata.get("description", ""),
-            metadata.get("duration", ""),
-            metadata.get("view_count", 0),
-            metadata.get("like_count", 0),
-            metadata.get("dislike_count", 0),
-            metadata.get("comment_count", 0),
-            metadata.get("publish_date", "")
-        ))
+        # Handle metadata
+        if metadata:
+            # Check if metadata exists
+            cursor.execute("SELECT id FROM metadata WHERE content_id = ?", (content_id,))
+            existing_metadata = cursor.fetchone()
+            
+            # Convert keywords to JSON if needed
+            keywords_json = json.dumps(metadata.get("keywords", "")) if isinstance(metadata.get("keywords"), (list, dict)) else metadata.get("keywords", "")
+            
+            if existing_metadata:
+                # Update existing metadata
+                cursor.execute('''
+                UPDATE metadata SET
+                    og_title = ?,
+                    og_description = ?,
+                    og_image = ?,
+                    keywords = ?
+                WHERE content_id = ?
+                ''', (
+                    metadata.get("og_title", ""),
+                    metadata.get("og_description", ""),
+                    metadata.get("og_image", ""),
+                    keywords_json,
+                    content_id
+                ))
+            else:
+                # Insert new metadata
+                cursor.execute('''
+                INSERT INTO metadata (
+                    content_id, og_title, og_description, og_image, keywords
+                ) VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    content_id,
+                    metadata.get("og_title", ""),
+                    metadata.get("og_description", ""),
+                    metadata.get("og_image", ""),
+                    keywords_json
+                ))
         
-        # Insert transcript if we have it
+        # Handle YouTube data
+        cursor.execute("SELECT id FROM youtube WHERE content_id = ?", (content_id,))
+        existing_youtube = cursor.fetchone()
+        
+        if existing_youtube:
+            youtube_id = existing_youtube[0]
+            # Update existing YouTube data
+            cursor.execute('''
+            UPDATE youtube SET
+                url = ?,
+                video_id = ?,
+                channel_name = ?,
+                description = ?,
+                duration = ?
+            WHERE id = ?
+            ''', (
+                video_data["url"],
+                video_data["video_id"],
+                metadata.get("channel_name", ""),
+                metadata.get("description", ""),
+                metadata.get("duration", ""),
+                youtube_id
+            ))
+        else:
+            # Insert new YouTube data
+            cursor.execute('''
+            INSERT INTO youtube (
+                content_id, url, video_id, channel_name, description, duration
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                content_id,
+                video_data["url"],
+                video_data["video_id"],
+                metadata.get("channel_name", ""),
+                metadata.get("description", ""),
+                metadata.get("duration", "")
+            ))
+            youtube_id = cursor.lastrowid
+        
+        # Handle transcript if we have it
         if transcript_data:
             cursor.execute('''
             INSERT INTO transcript (
-                url, full_text, language, duration, fetched_at
+                youtube_id, full_text, language, duration, fetched_at
             ) VALUES (?, ?, ?, ?, ?)
             ''', (
-                video_data["url"],
+                youtube_id,
                 transcript_data["full_text"],
                 transcript_data["language"],
                 transcript_data["duration"],
@@ -623,6 +704,10 @@ def main():
             print(f"Found cookies file at {cookies_path}")
         else:
             print("WARNING: No cookies file found. YouTube might block the request.")
+            print("Creating empty cookies file to prevent potential issues")
+            os.makedirs(os.path.dirname(cookies_path), exist_ok=True)
+            with open(cookies_path, 'w') as f:
+                f.write("# HTTP Cookie File")
         
         # Process videos
         videos_to_process = new_videos + updating_videos
@@ -645,6 +730,17 @@ def main():
                 print(f"Fetching metadata for {video_id}...")
                 metadata = fetch_youtube_metadata(video_id)
                 
+                # Debug metadata
+                if not metadata:
+                    print(f"WARNING: No metadata returned for {video_id}")
+                else:
+                    print(f"Metadata keys: {', '.join(metadata.keys())}")
+                
+                # Update video title if metadata contains it
+                if metadata and metadata.get("og_title"):
+                    video["title"] = metadata["og_title"]
+                    print(f"Updated title to: {video['title']}")
+                
                 # Fetch transcript
                 print(f"Fetching transcript for {video_id}...")
                 transcript_data = fetch_transcript_with_timestamps(video_id)
@@ -666,6 +762,7 @@ def main():
                         "video_id": video_id,
                         "url": video["url"],
                         "title": video["title"],
+                        "metadata_fetched": bool(metadata),
                         "transcript_fetched": transcript_data is not None,
                         "processed_at": datetime.now(timezone.utc).isoformat()
                     })
