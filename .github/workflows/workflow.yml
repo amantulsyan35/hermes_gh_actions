@@ -23,6 +23,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 libsql-experimental
 
+      # Ensure the data directory exists
+      - name: Create data directory
+        run: mkdir -p data
+
       # Run Web content fetcher script
       - name: Run Web content fetcher script
         env:
@@ -31,12 +35,12 @@ jobs:
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: python scripts/fetch_web.py
 
-      # Upload database and results as artifacts (for backup)
-      - name: Upload database
+      # Upload local cache and results as artifacts (for backup)
+      - name: Upload processed data
         uses: actions/upload-artifact@v4
         with:
-          name: database-files
+          name: processed-data
           path: |
-            content.sqlite
+            local.db
             data/processed_weblinks.json
           retention-days: 5

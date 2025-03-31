@@ -4,10 +4,12 @@ import libsql_experimental as libsql
 import json
 from datetime import datetime
 import sys
+import requests
+from bs4 import BeautifulSoup
 
 def create_turso_tables(conn):
     """
-    Create the necessary tables in Turso that mirror our SQLite schema
+    Create the necessary tables in Turso database
     """
     print("Creating tables in Turso database...")
     
@@ -103,111 +105,75 @@ def create_turso_tables(conn):
     
     print("Tables created successfully.")
 
-def copy_data(sqlite_conn, turso_conn):
+def fetch_web_content(api_endpoint):
     """
-    Copy data from SQLite to Turso
+    Fetch web content from the API
     """
-    print("Copying data from SQLite to Turso...")
+    print(f"Fetching web content from {api_endpoint}...")
+    try:
+        response = requests.get(api_endpoint)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        print(f"Error fetching content: {str(e)}")
+        return []
+
+def process_and_store_content(content_data, turso_conn):
+    """
+    Process fetched content and store in Turso
+    """
+    entries_added = 0
+    scrape_errors = 0
     
-    # Set SQLite to return rows as dictionaries
-    sqlite_conn.row_factory = sqlite3.Row
-    
-    # Copy content table
-    print("Copying content table...")
-    content_cursor = sqlite_conn.cursor()
-    content_cursor.execute("SELECT * FROM content")
-    content_rows = content_cursor.fetchall()
-    
-    # Clear existing data to prevent duplicates
-    turso_conn.execute("DELETE FROM content")
-    
-    for row in content_rows:
-        # Convert row to dictionary
-        row_dict = dict(row)
-        
-        # Build placeholders for SQL query
-        placeholders = ", ".join(["?" for _ in row_dict])
-        columns = ", ".join(row_dict.keys())
-        
-        # Build SQL statement
-        sql = f"INSERT INTO content ({columns}) VALUES ({placeholders})"
-        
-        # Execute query
-        turso_conn.execute(sql, list(row_dict.values()))
-    
-    # Copy metadata table
-    print("Copying metadata table...")
-    metadata_cursor = sqlite_conn.cursor()
-    metadata_cursor.execute("SELECT * FROM metadata")
-    metadata_rows = metadata_cursor.fetchall()
-    
-    # Clear existing data
-    turso_conn.execute("DELETE FROM metadata")
-    
-    for row in metadata_rows:
-        row_dict = dict(row)
-        placeholders = ", ".join(["?" for _ in row_dict])
-        columns = ", ".join(row_dict.keys())
-        sql = f"INSERT INTO metadata ({columns}) VALUES ({placeholders})"
-        turso_conn.execute(sql, list(row_dict.values()))
-    
-    # Copy web table - this might contain large text fields
-    print("Copying web table...")
-    web_cursor = sqlite_conn.cursor()
-    web_cursor.execute("SELECT * FROM web")
-    web_rows = web_cursor.fetchall()
-    
-    # Clear existing data
-    turso_conn.execute("DELETE FROM web")
-    
-    for row in web_rows:
-        row_dict = dict(row)
-        placeholders = ", ".join(["?" for _ in row_dict])
-        columns = ", ".join(row_dict.keys())
-        sql = f"INSERT INTO web ({columns}) VALUES ({placeholders})"
-        turso_conn.execute(sql, list(row_dict.values()))
-    
-    # Check if YouTube-related tables exist in SQLite and copy them if they do
-    tables_to_check = ['youtube', 'transcript', 'transcript_segments']
-    for table in tables_to_check:
-        # Check if table exists in SQLite
-        check_cursor = sqlite_conn.cursor()
-        check_cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
-        if check_cursor.fetchone():
-            print(f"Copying {table} table...")
+    for item in content_data:
+        try:
+            url = item.get('url')
+            if not url:
+                continue
+                
+            # Check if URL already exists
+            existing = turso_conn.execute("SELECT id FROM content WHERE url = ?", (url,)).fetchone()
+            if existing:
+                # Update existing content if needed
+                continue
+                
+            # Add new content entry
+            current_time = datetime.now().isoformat()
+            turso_conn.execute('''
+            INSERT INTO content (url, content_type, title, created_at)
+            VALUES (?, ?, ?, ?)
+            ''', (url, 'web', item.get('title', ''), current_time))
             
-            # Clear existing data
-            turso_conn.execute(f"DELETE FROM {table}")
+            # Get the content_id
+            content_id = turso_conn.execute("SELECT id FROM content WHERE url = ?", (url,)).fetchone()[0]
             
-            # Get and copy data
-            data_cursor = sqlite_conn.cursor()
-            data_cursor.execute(f"SELECT * FROM {table}")
-            rows = data_cursor.fetchall()
+            # Add to web table
+            turso_conn.execute('''
+            INSERT INTO web (content_id, url, full_content)
+            VALUES (?, ?, ?)
+            ''', (content_id, url, item.get('content', '')))
             
-            for row in rows:
-                row_dict = dict(row)
-                placeholders = ", ".join(["?" for _ in row_dict])
-                columns = ", ".join(row_dict.keys())
-                sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
-                turso_conn.execute(sql, list(row_dict.values()))
+            # Add metadata if available
+            if 'metadata' in item and isinstance(item['metadata'], dict):
+                meta = item['metadata']
+                turso_conn.execute('''
+                INSERT INTO metadata (content_id, og_title, og_description, og_image, keywords)
+                VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    content_id,
+                    meta.get('og_title', ''),
+                    meta.get('og_description', ''),
+                    meta.get('og_image', ''),
+                    json.dumps(meta.get('keywords', []))
+                ))
+            
+            entries_added += 1
+            
+        except Exception as e:
+            print(f"Error processing item {url}: {str(e)}")
+            scrape_errors += 1
     
-    # Copy sync_history table
-    print("Copying sync_history table...")
-    sync_cursor = sqlite_conn.cursor()
-    sync_cursor.execute("SELECT * FROM sync_history")
-    sync_rows = sync_cursor.fetchall()
-    
-    # Clear existing data
-    turso_conn.execute("DELETE FROM sync_history")
-    
-    for row in sync_rows:
-        row_dict = dict(row)
-        placeholders = ", ".join(["?" for _ in row_dict])
-        columns = ", ".join(row_dict.keys())
-        sql = f"INSERT INTO sync_history ({columns}) VALUES ({placeholders})"
-        turso_conn.execute(sql, list(row_dict.values()))
-    
-    # Add a migration record to sync_history
+    # Add to sync history
     current_time = datetime.now().isoformat()
     turso_conn.execute('''
     INSERT INTO sync_history (
@@ -215,18 +181,18 @@ def copy_data(sqlite_conn, turso_conn):
     ) VALUES (?, ?, ?, ?, ?, ?)
     ''', (
         current_time,
-        len(content_rows),
+        entries_added,
         0,
         0,
-        0,
-        "sqlite_migration"
+        scrape_errors,
+        "api_fetch"
     ))
     
-    print(f"Successfully copied {len(content_rows)} entries to Turso.")
+    return entries_added, scrape_errors
 
 def main():
     # Check environment variables or use defaults
-    SQLITE_DB = os.environ.get("SQLITE_DB", "content.sqlite")
+    API_ENDPOINT = os.environ.get("API_ENDPOINT", "https://open-source-content.xyz/v1/web")
     TURSO_URL = os.environ.get("TURSO_URL", "libsql://context-amantulsyan35.aws-us-east-1.turso.io")
     TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
     
@@ -234,15 +200,6 @@ def main():
     if not TURSO_AUTH_TOKEN:
         print("Error: TURSO_AUTH_TOKEN environment variable is required")
         sys.exit(1)
-    
-    print(f"Connecting to SQLite database: {SQLITE_DB}")
-    # Check if SQLite file exists
-    if not os.path.exists(SQLITE_DB):
-        print(f"Error: SQLite database file {SQLITE_DB} not found")
-        sys.exit(1)
-    
-    # Connect to the SQLite database
-    sqlite_conn = sqlite3.connect(SQLITE_DB)
     
     # Connect to Turso 
     print(f"Connecting to Turso database: {TURSO_URL}")
@@ -253,8 +210,15 @@ def main():
         # Create Turso tables if they don't exist
         create_turso_tables(turso_conn)
         
-        # Copy data from SQLite to Turso
-        copy_data(sqlite_conn, turso_conn)
+        # Fetch web content
+        content_data = fetch_web_content(API_ENDPOINT)
+        
+        # Process and store content
+        if content_data:
+            entries_added, scrape_errors = process_and_store_content(content_data, turso_conn)
+            print(f"Added {entries_added} new entries with {scrape_errors} errors")
+        else:
+            print("No content fetched from API")
         
         # Sync changes to Turso
         print("Syncing changes to Turso...")
@@ -262,27 +226,16 @@ def main():
         print("Sync completed successfully.")
         
         # Validate by counting rows
-        sqlite_cursor = sqlite_conn.cursor()
-        sqlite_cursor.execute("SELECT COUNT(*) FROM content")
-        sqlite_count = sqlite_cursor.fetchone()[0]
-        
-        turso_count = turso_conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
-        
-        print(f"Validation - SQLite content rows: {sqlite_count}, Turso content rows: {turso_count}")
-        
-        if sqlite_count == turso_count:
-            print("✅ Migration successful! Row counts match.")
-        else:
-            print("⚠️ Warning: Row counts don't match. Some data may not have been transferred.")
+        content_count = turso_conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
+        print(f"Current content entries in database: {content_count}")
             
     except Exception as e:
-        print(f"Error during migration: {str(e)}")
+        print(f"Error during execution: {str(e)}")
         sys.exit(1)
     finally:
-        # Close connections
-        sqlite_conn.close()
+        # Close connection
         turso_conn.close()
-        print("Database connections closed.")
+        print("Database connection closed.")
 
 if __name__ == "__main__":
     main()
