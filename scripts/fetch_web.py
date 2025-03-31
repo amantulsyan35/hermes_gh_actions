@@ -1,5 +1,4 @@
 import os
-import sqlite3
 import libsql_experimental as libsql
 import json
 from datetime import datetime
@@ -113,7 +112,18 @@ def fetch_web_content(api_endpoint):
     try:
         response = requests.get(api_endpoint)
         response.raise_for_status()
-        return response.json()
+        
+        # Print the first 100 characters to debug
+        print(f"API Response (first 100 chars): {response.text[:100]}...")
+        
+        # Try to parse as JSON
+        try:
+            return response.json()
+        except json.JSONDecodeError as e:
+            print(f"Failed to decode JSON: {e}")
+            # If it's a string, try to parse URLs directly
+            lines = response.text.strip().split('\n')
+            return [{"url": line.strip()} for line in lines if line.strip()]
     except Exception as e:
         print(f"Error fetching content: {str(e)}")
         return []
@@ -125,24 +135,70 @@ def process_and_store_content(content_data, turso_conn):
     entries_added = 0
     scrape_errors = 0
     
-    for item in content_data:
+    # Handle different data formats
+    if not content_data:
+        print("No content data to process")
+        return 0, 0
+        
+    # Check if content_data is a list or dict
+    if isinstance(content_data, str):
+        # Handle string data (possibly a URL list)
         try:
-            url = item.get('url')
+            # Try to parse as JSON string first
+            content_data = json.loads(content_data)
+        except json.JSONDecodeError:
+            # Split by lines if it's a text list of URLs
+            content_data = [{"url": line.strip()} for line in content_data.split('\n') if line.strip()]
+    
+    # Ensure we have a list to iterate
+    if not isinstance(content_data, list):
+        content_data = [content_data]
+    
+    for item in content_data:
+        url = None
+        try:
+            # Handle different item formats
+            if isinstance(item, dict):
+                url = item.get('url')
+            elif isinstance(item, str):
+                url = item
+                
             if not url:
                 continue
+                
+            print(f"Processing URL: {url}")
                 
             # Check if URL already exists
             existing = turso_conn.execute("SELECT id FROM content WHERE url = ?", (url,)).fetchone()
             if existing:
-                # Update existing content if needed
+                print(f"URL already exists: {url}")
                 continue
                 
+            # Fetch the content if needed
+            try:
+                content = ""
+                title = ""
+                if isinstance(item, str) or (isinstance(item, dict) and 'content' not in item):
+                    print(f"Fetching content for {url}")
+                    page_response = requests.get(url, timeout=10)
+                    if page_response.status_code == 200:
+                        soup = BeautifulSoup(page_response.text, 'html.parser')
+                        title = soup.title.string if soup.title else ""
+                        content = page_response.text
+                else:
+                    title = item.get('title', '')
+                    content = item.get('content', '')
+            except Exception as e:
+                print(f"Error fetching content for {url}: {e}")
+                content = ""
+                title = ""
+            
             # Add new content entry
             current_time = datetime.now().isoformat()
             turso_conn.execute('''
             INSERT INTO content (url, content_type, title, created_at)
             VALUES (?, ?, ?, ?)
-            ''', (url, 'web', item.get('title', ''), current_time))
+            ''', (url, 'web', title, current_time))
             
             # Get the content_id
             content_id = turso_conn.execute("SELECT id FROM content WHERE url = ?", (url,)).fetchone()[0]
@@ -151,26 +207,29 @@ def process_and_store_content(content_data, turso_conn):
             turso_conn.execute('''
             INSERT INTO web (content_id, url, full_content)
             VALUES (?, ?, ?)
-            ''', (content_id, url, item.get('content', '')))
+            ''', (content_id, url, content))
             
             # Add metadata if available
-            if 'metadata' in item and isinstance(item['metadata'], dict):
+            meta = {}
+            if isinstance(item, dict) and 'metadata' in item:
                 meta = item['metadata']
-                turso_conn.execute('''
-                INSERT INTO metadata (content_id, og_title, og_description, og_image, keywords)
-                VALUES (?, ?, ?, ?, ?)
-                ''', (
-                    content_id,
-                    meta.get('og_title', ''),
-                    meta.get('og_description', ''),
-                    meta.get('og_image', ''),
-                    json.dumps(meta.get('keywords', []))
-                ))
+            
+            turso_conn.execute('''
+            INSERT INTO metadata (content_id, og_title, og_description, og_image, keywords)
+            VALUES (?, ?, ?, ?, ?)
+            ''', (
+                content_id,
+                meta.get('og_title', '') if isinstance(meta, dict) else '',
+                meta.get('og_description', '') if isinstance(meta, dict) else '',
+                meta.get('og_image', '') if isinstance(meta, dict) else '',
+                json.dumps(meta.get('keywords', [])) if isinstance(meta, dict) else '[]'
+            ))
             
             entries_added += 1
+            print(f"Added entry for {url}")
             
         except Exception as e:
-            print(f"Error processing item {url}: {str(e)}")
+            print(f"Error processing item {url if url else 'unknown'}: {str(e)}")
             scrape_errors += 1
     
     # Add to sync history
@@ -204,9 +263,11 @@ def main():
     # Connect to Turso 
     print(f"Connecting to Turso database: {TURSO_URL}")
     # The local.db is just a local cache file
-    turso_conn = libsql.connect("local.db", sync_url=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
+    turso_conn = None
     
     try:
+        turso_conn = libsql.connect("local.db", sync_url=TURSO_URL, auth_token=TURSO_AUTH_TOKEN)
+        
         # Create Turso tables if they don't exist
         create_turso_tables(turso_conn)
         
@@ -231,11 +292,21 @@ def main():
             
     except Exception as e:
         print(f"Error during execution: {str(e)}")
+        if turso_conn:
+            try:
+                turso_conn.sync()
+            except:
+                pass
         sys.exit(1)
     finally:
-        # Close connection
-        turso_conn.close()
-        print("Database connection closed.")
+        # Close connection - safely
+        if turso_conn:
+            # libsql Connection might not have close() method
+            try:
+                turso_conn.sync()  # Make sure changes are synced
+            except:
+                pass
+        print("Database operation completed.")
 
 if __name__ == "__main__":
     main()
