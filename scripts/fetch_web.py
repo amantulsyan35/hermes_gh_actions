@@ -118,7 +118,16 @@ def fetch_web_content(api_endpoint):
         
         # Try to parse as JSON
         try:
-            return response.json()
+            json_data = response.json()
+            
+            # Check if the response is in the format {"data": [url1, url2, ...]}
+            if isinstance(json_data, dict) and 'data' in json_data and isinstance(json_data['data'], list):
+                # Extract URLs from the data array
+                return [{"url": url} for url in json_data['data'] if isinstance(url, str)]
+            
+            # If not in the expected format, return the data as is
+            return json_data
+            
         except json.JSONDecodeError as e:
             print(f"Failed to decode JSON: {e}")
             # If it's a string, try to parse URLs directly
