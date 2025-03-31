@@ -1,0 +1,20 @@
+{
+  "name": "gh_actions",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/fetch_web.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@libsql/client": "^0.15.1",
+    "@types/node": "^22.13.14",
+    "cheerio": "^1.0.0",
+    "node-fetch": "^3.3.2",
+    "typescript": "^5.8.2"
+  }
+}
