@@ -23,21 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 libsql-experimental
 
-      # Run Web content fetcher script (don't need Turso token here)
-    -  name: Run Web content fetcher script
+      # Run Web content fetcher script
+      - name: Run Web content fetcher script
         env:
-        API_ENDPOINT: "https://open-source-content.xyz/v1/web"
-        TURSO_URL: "libsql://context-amantulsyan35.aws-us-east-1.turso.io"
-        TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          API_ENDPOINT: "https://open-source-content.xyz/v1/web"
+          TURSO_URL: "libsql://context-amantulsyan35.aws-us-east-1.turso.io"
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
         run: python scripts/fetch_web.py
-
-      # # Migrate data to Turso database (needs Turso token)
-      # - name: Migrate data to Turso
-      #   env:
-      #     SQLITE_DB: "content.sqlite"
-      #     TURSO_URL: "libsql://context-amantulsyan35.aws-us-east-1.turso.io"
-      #     TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-      #   run: python scripts/sqlite_to_turso.py
 
       # Upload database and results as artifacts (for backup)
       - name: Upload database
