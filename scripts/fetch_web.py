@@ -104,39 +104,6 @@ def create_turso_tables(conn):
     
     print("Tables created successfully.")
 
-def fetch_web_content(api_endpoint):
-    """
-    Fetch web content from the API
-    """
-    print(f"Fetching web content from {api_endpoint}...")
-    try:
-        response = requests.get(api_endpoint)
-        response.raise_for_status()
-        
-        # Print the first 100 characters to debug
-        print(f"API Response (first 100 chars): {response.text[:100]}...")
-        
-        # Try to parse as JSON
-        try:
-            json_data = response.json()
-            
-            # Check if the response is in the format {"data": [url1, url2, ...]}
-            if isinstance(json_data, dict) and 'data' in json_data and isinstance(json_data['data'], list):
-                # Extract URLs from the data array
-                return [{"url": url} for url in json_data['data'] if isinstance(url, str)]
-            
-            # If not in the expected format, return the data as is
-            return json_data
-            
-        except json.JSONDecodeError as e:
-            print(f"Failed to decode JSON: {e}")
-            # If it's a string, try to parse URLs directly
-            lines = response.text.strip().split('\n')
-            return [{"url": line.strip()} for line in lines if line.strip()]
-    except Exception as e:
-        print(f"Error fetching content: {str(e)}")
-        return []
-
 def process_and_store_content(content_data, turso_conn):
     """
     Process fetched content and store in Turso
@@ -148,6 +115,10 @@ def process_and_store_content(content_data, turso_conn):
     if not content_data:
         print("No content data to process")
         return 0, 0
+    
+    # Extract URLs from {"data": [urls]} format if needed
+    if isinstance(content_data, dict) and 'data' in content_data and isinstance(content_data['data'], list):
+        content_data = [{"url": url} for url in content_data['data'] if isinstance(url, str)]
         
     # Check if content_data is a list or dict
     if isinstance(content_data, str):
@@ -192,7 +163,11 @@ def process_and_store_content(content_data, turso_conn):
                     page_response = requests.get(url, timeout=10)
                     if page_response.status_code == 200:
                         soup = BeautifulSoup(page_response.text, 'html.parser')
-                        title = soup.title.string if soup.title else ""
+                        # Fix the NoneType error for title
+                        if soup.title and soup.title.string:
+                            title = soup.title.string
+                        else:
+                            title = url  # Use URL as fallback title
                         content = page_response.text
                 else:
                     title = item.get('title', '')
@@ -200,7 +175,7 @@ def process_and_store_content(content_data, turso_conn):
             except Exception as e:
                 print(f"Error fetching content for {url}: {e}")
                 content = ""
-                title = ""
+                title = url  # Use URL as fallback title
             
             # Add new content entry
             current_time = datetime.now().isoformat()
@@ -208,6 +183,12 @@ def process_and_store_content(content_data, turso_conn):
             INSERT INTO content (url, content_type, title, created_at)
             VALUES (?, ?, ?, ?)
             ''', (url, 'web', title, current_time))
+            
+            # Commit after each insert to avoid transaction timeouts
+            try:
+                turso_conn.sync()
+            except Exception as e:
+                print(f"Warning: Sync after content insert failed: {e}")
             
             # Get the content_id
             content_id = turso_conn.execute("SELECT id FROM content WHERE url = ?", (url,)).fetchone()[0]
@@ -217,6 +198,12 @@ def process_and_store_content(content_data, turso_conn):
             INSERT INTO web (content_id, url, full_content)
             VALUES (?, ?, ?)
             ''', (content_id, url, content))
+            
+            # Commit after each web insert
+            try:
+                turso_conn.sync()
+            except Exception as e:
+                print(f"Warning: Sync after web insert failed: {e}")
             
             # Add metadata if available
             meta = {}
@@ -234,27 +221,51 @@ def process_and_store_content(content_data, turso_conn):
                 json.dumps(meta.get('keywords', [])) if isinstance(meta, dict) else '[]'
             ))
             
+            # Commit after each metadata insert
+            try:
+                turso_conn.sync()
+            except Exception as e:
+                print(f"Warning: Sync after metadata insert failed: {e}")
+            
             entries_added += 1
             print(f"Added entry for {url}")
             
         except Exception as e:
             print(f"Error processing item {url if url else 'unknown'}: {str(e)}")
             scrape_errors += 1
+            
+            # Try to reconnect to Turso if we get a specific error
+            if "stream not found" in str(e):
+                print("Attempting to reconnect to Turso database...")
+                try:
+                    # Recreate the connection
+                    turso_conn = libsql.connect("local.db", 
+                                             sync_url=os.environ.get("TURSO_URL"), 
+                                             auth_token=os.environ.get("TURSO_AUTH_TOKEN"))
+                    print("Successfully reconnected to Turso database")
+                except Exception as conn_err:
+                    print(f"Failed to reconnect: {conn_err}")
     
     # Add to sync history
-    current_time = datetime.now().isoformat()
-    turso_conn.execute('''
-    INSERT INTO sync_history (
-        sync_time, entries_added, entries_updated, entries_scraped, scrape_errors, sync_type
-    ) VALUES (?, ?, ?, ?, ?, ?)
-    ''', (
-        current_time,
-        entries_added,
-        0,
-        0,
-        scrape_errors,
-        "api_fetch"
-    ))
+    try:
+        current_time = datetime.now().isoformat()
+        turso_conn.execute('''
+        INSERT INTO sync_history (
+            sync_time, entries_added, entries_updated, entries_scraped, scrape_errors, sync_type
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            current_time,
+            entries_added,
+            0,
+            0,
+            scrape_errors,
+            "api_fetch"
+        ))
+        
+        # Final sync
+        turso_conn.sync()
+    except Exception as e:
+        print(f"Error adding sync history: {e}")
     
     return entries_added, scrape_errors
 
@@ -281,7 +292,16 @@ def main():
         create_turso_tables(turso_conn)
         
         # Fetch web content
-        content_data = fetch_web_content(API_ENDPOINT)
+        response = requests.get(API_ENDPOINT)
+        print(f"Fetching web content from {API_ENDPOINT}...")
+        print(f"API Response (first 100 chars): {response.text[:100]}...")
+        
+        # Parse the response
+        try:
+            content_data = response.json()
+        except:
+            print("Failed to parse JSON response")
+            content_data = []
         
         # Process and store content
         if content_data:
@@ -290,14 +310,20 @@ def main():
         else:
             print("No content fetched from API")
         
-        # Sync changes to Turso
-        print("Syncing changes to Turso...")
-        turso_conn.sync()
-        print("Sync completed successfully.")
+        # Final sync
+        try:
+            print("Syncing changes to Turso...")
+            turso_conn.sync()
+            print("Sync completed successfully.")
+        except Exception as e:
+            print(f"Error during final sync: {e}")
         
         # Validate by counting rows
-        content_count = turso_conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
-        print(f"Current content entries in database: {content_count}")
+        try:
+            content_count = turso_conn.execute("SELECT COUNT(*) FROM content").fetchone()[0]
+            print(f"Current content entries in database: {content_count}")
+        except Exception as e:
+            print(f"Error counting entries: {e}")
             
     except Exception as e:
         print(f"Error during execution: {str(e)}")
@@ -308,13 +334,6 @@ def main():
                 pass
         sys.exit(1)
     finally:
-        # Close connection - safely
-        if turso_conn:
-            # libsql Connection might not have close() method
-            try:
-                turso_conn.sync()  # Make sure changes are synced
-            except:
-                pass
         print("Database operation completed.")
 
 if __name__ == "__main__":
