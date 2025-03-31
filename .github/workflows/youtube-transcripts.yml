@@ -1,4 +1,4 @@
-name: YouTube Transcript Fetcher
+name: Web Content Fetcher
 
 on:
   schedule:
@@ -6,7 +6,7 @@ on:
   workflow_dispatch: # Allow manual triggering
 
 jobs:
-  fetch-and-store-transcripts:
+  fetch-and-store-web-content:
     runs-on: ubuntu-latest
 
     steps:
@@ -26,29 +26,21 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install requests yt-dlp
+          pip install requests beautifulsoup4
           npm install -g wrangler@latest
 
-      # This is the new step to add
-      - name: Setup YouTube cookies
+      # Run Web content fetcher script only
+      - name: Run Web content fetcher script
         env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: |
-          mkdir -p ~/.config/yt-dlp
-          echo "$YOUTUBE_COOKIES" > ~/.config/yt-dlp/cookies.txt
-          chmod 600 ~/.config/yt-dlp/cookies.txt
-          echo "YouTube cookies file created"
+          API_ENDPOINT: "https://open-source-content.xyz/v1/web"
+        run: python scripts/fetch_web_content.py
 
-      - name: Run transcript fetcher script
-        env:
-          API_ENDPOINT: "https://open-source-content.xyz/v1/youtube"
-        run: python scripts/fetch_transcripts.py
-
+      # Upload database and results
       - name: Upload database
-        uses: actions/upload-artifact@v4 # Updated to v4 from v3
+        uses: actions/upload-artifact@v4
         with:
           name: database-files
           path: |
             content.sqlite
-            data/processed_videos.json
-          retention-days: 5 # Optional: keep artifacts for 5 days
+            data/processed_weblinks.json
+          retention-days: 5
