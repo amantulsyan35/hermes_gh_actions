@@ -33,7 +33,7 @@ jobs:
       - name: Run Web content fetcher script
         env:
           API_ENDPOINT: "https://open-source-content.xyz/v1/web"
-        run: python scripts/fetch_web_content.py
+        run: python scripts/fetch_web.py
 
       # Upload database and results
       - name: Upload database
