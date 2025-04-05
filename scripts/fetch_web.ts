@@ -120,12 +120,6 @@ async function extractPageContent(link: string): Promise<ExtractedContent> {
           fullContent += "#".repeat(level) + " " + headingText + "\n\n";
         }
       });
-      // $("h1, h2, h3, h4, h5, h6").each((_, element) => {
-      //   const tagName = element.tagName.toLowerCase();
-      //   const level = parseInt(tagName.substring(1));
-      //   const prefix = "#".repeat(level) + " ";
-      //   fullContent += prefix + $(element).text().trim() + "\n\n";
-      // });
 
       // Extract paragraphs
       $(
