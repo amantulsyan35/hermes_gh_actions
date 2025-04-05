@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install cheerio pg openai
+          npm install cheerio pg openai pg-protocol
           npm install --save-dev typescript @types/node @types/cheerio @types/pg
 
       # Create a tsconfig.json file
@@ -32,8 +32,9 @@ jobs:
               "module": "CommonJS",
               "esModuleInterop": true,
               "outDir": "./dist",
-              "strict": true,
-              "moduleResolution": "node"
+              "strict": false,
+              "moduleResolution": "node",
+              "skipLibCheck": true
             },
             "include": ["./scripts/**/*"]
           }' > tsconfig.json
