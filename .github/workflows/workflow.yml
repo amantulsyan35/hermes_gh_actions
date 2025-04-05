@@ -44,4 +44,4 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PROCESS_LIMIT: ${{ secrets.PROCESS_LIMIT }}
-        run: node dist/scripts/fetch_web.js
+        run: node scripts/fetch_web.ts
