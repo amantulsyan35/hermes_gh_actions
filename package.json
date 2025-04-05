@@ -17,11 +17,11 @@
     "cheerio": "^1.0.0",
     "node-fetch": "^3.3.2",
     "openai": "^4.91.1",
-    "pg": "^8.14.1",
-    "pg-protocol": "^1.8.0",
+    "pg": "^8.11.3",
+    "pg-protocol": "^1.6.0",
     "typescript": "^5.8.2"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.11"
+    "@types/pg": "^8.6.6"
   }
 }
