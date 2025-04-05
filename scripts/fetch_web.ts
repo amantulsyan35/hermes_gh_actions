@@ -45,7 +45,9 @@ function formatEmbeddingForPostgres(embedding: number[]): string {
   return `[${embedding.join(",")}]`;
 }
 
-async function extractPageContent(link: string): Promise<ExtractedContent> {
+async function extractPageContent(
+  link: string
+): Promise<ExtractedContent | null> {
   try {
     console.log(`Fetching content for ${link}`);
 
@@ -154,20 +156,7 @@ async function extractPageContent(link: string): Promise<ExtractedContent> {
     }
   } catch (error) {
     console.error(`Error scraping ${link}:`, error);
-
-    // Return default values in case of error
-    return {
-      title: link, // Using the URL as the title for failed pages
-      url: link,
-      publishedAt: null,
-      fullContent: `Failed to retrieve content from ${link}.`,
-      metaData: {
-        ogTitle: "",
-        ogDescription: "",
-        ogImage: "",
-        keywords: "",
-      },
-    };
+    return null;
   }
 }
 
@@ -268,6 +257,18 @@ async function storeContentInDatabase(
   }
 }
 
+async function extractPageContentWithRetry(
+  url: string,
+  retries = 2
+): Promise<ExtractedContent | null> {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    const result = await extractPageContent(url);
+    if (result) return result;
+    console.warn(`Retrying (${attempt}/${retries}) for ${url}`);
+  }
+  return null;
+}
+
 async function processURLs(
   entries: OpenSourceEntry[],
   limit: number = 10
@@ -298,11 +299,23 @@ async function processURLs(
           continue;
         }
 
-        // 1. Extract content
-        const content = await extractPageContent(url);
+        const content = await extractPageContentWithRetry(url);
+
+        if (!content) {
+          console.log(`Skipping ${url} after failed retries`);
+          skippedCount++;
+          continue;
+        }
 
         // 2. Generate embedding
-        const embedding = await generateEmbedding(content.fullContent);
+        let embedding: number[];
+        try {
+          embedding = await generateEmbedding(content.fullContent);
+        } catch (err) {
+          console.error("Embedding failed, skipping this entry");
+          errorCount++;
+          continue;
+        }
 
         // 3. Store in DB
         const contentWithEmbedding: ContentWithEmbedding = {
@@ -353,6 +366,21 @@ async function processURLs(
 
 // Main function to fetch and process content
 async function main() {
+  const requiredEnv = [
+    "OPENAI_API_KEY",
+    "POSTGRES_HOST",
+    "POSTGRES_USER",
+    "POSTGRES_PASSWORD",
+    "POSTGRES_DB",
+  ];
+
+  requiredEnv.forEach((key) => {
+    if (!process.env[key]) {
+      console.error(`Missing required environment variable: ${key}`);
+      process.exit(1);
+    }
+  });
+
   try {
     const apiEndpoint =
       process.env.API_ENDPOINT || "https://open-source-content.xyz/v1/web";
