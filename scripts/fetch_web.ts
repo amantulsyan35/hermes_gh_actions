@@ -113,9 +113,12 @@ async function extractPageContent(link: string): Promise<ExtractedContent> {
 
       // Get heading elements with their hierarchy
       $("h1, h2, h3, h4, h5, h6").each((_, el) => {
-        const level = parseInt(el.tagName.substring(1));
-        const headingText = $(el).text().trim();
-        fullContent += "#".repeat(level) + " " + headingText + "\n\n";
+        if (el.type === "tag") {
+          const tag = el.tagName.toLowerCase();
+          const level = parseInt(tag.substring(1));
+          const headingText = $(el).text().trim();
+          fullContent += "#".repeat(level) + " " + headingText + "\n\n";
+        }
       });
       // $("h1, h2, h3, h4, h5, h6").each((_, element) => {
       //   const tagName = element.tagName.toLowerCase();
