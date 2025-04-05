@@ -1,7 +1,8 @@
-import { load } from "cheerio";
-import { Pool } from "pg";
-import OpenAI from "openai";
-import { SQL } from "../sql-queries.js";
+// CommonJS version of the script
+const cheerio = require("cheerio");
+const { Pool } = require("pg");
+const { OpenAI } = require("openai");
+const SQL = require("./sql-queries");
 
 // Initialize OpenAI client
 const openai = new OpenAI({
@@ -54,7 +55,7 @@ async function extractPageContent(link) {
       const html = await response.text();
 
       // Load the HTML content into cheerio
-      const $ = load(html);
+      const $ = cheerio.load(html);
 
       // Extract the page title
       const title =

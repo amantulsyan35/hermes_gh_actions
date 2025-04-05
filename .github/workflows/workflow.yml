@@ -21,13 +21,7 @@ jobs:
       - name: Install dependencies
         run: npm install cheerio pg openai
 
-      - name: Create package.json for ES modules
-        run: |
-          echo '{
-            "name": "web-content-scraper",
-            "version": "1.0.0",
-            "type": "module"
-          }' > package.json
+      # No need for package.json config since we're using CommonJS
 
       # Run the web content scraper script
       - name: Run web content scraper
