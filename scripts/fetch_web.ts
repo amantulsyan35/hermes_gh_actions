@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import cheerio from "cheerio";
 import { Pool } from "pg";
 import OpenAI from "openai";
 import { SQL } from "../sql-queries";
@@ -111,13 +112,17 @@ async function extractPageContent(link: string): Promise<ExtractedContent> {
       let fullContent = "";
 
       // Get heading elements with their hierarchy
-      $("h1, h2, h3, h4, h5, h6").each((_, element) => {
-        const tagName = element.tagName?.toLowerCase?.();
-        const level = parseInt(tagName?.substring(1) || "0");
-        const prefix = "#".repeat(level || 1) + " ";
-        const headingText = $(element).text().trim();
-        fullContent += prefix + headingText + "\n\n";
+      $("h1, h2, h3, h4, h5, h6").each((_, el) => {
+        const level = parseInt(el.tagName.substring(1));
+        const headingText = $(el).text().trim();
+        fullContent += "#".repeat(level) + " " + headingText + "\n\n";
       });
+      // $("h1, h2, h3, h4, h5, h6").each((_, element) => {
+      //   const tagName = element.tagName.toLowerCase();
+      //   const level = parseInt(tagName.substring(1));
+      //   const prefix = "#".repeat(level) + " ";
+      //   fullContent += prefix + $(element).text().trim() + "\n\n";
+      // });
 
       // Extract paragraphs
       $(
