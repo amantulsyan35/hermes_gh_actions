@@ -40,7 +40,7 @@ async function extractPageContent(
   link: string
 ): Promise<ExtractedContent | null> {
   try {
-    console.log(`Fetching content for ${link}`);
+    console.log(`🧠 Starting scrape for: ${link}`);
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10000);
 
@@ -99,6 +99,7 @@ async function extractPageContent(
         .replace(/\s{2,}/g, " ")
         .trim();
 
+      console.log(`✅ Scraped content from: ${link}`);
       return { title, url: link, publishedAt, fullContent, metaData };
     } catch (fetchError: any) {
       clearTimeout(timeoutId);
@@ -107,7 +108,7 @@ async function extractPageContent(
       throw fetchError;
     }
   } catch (error) {
-    console.error(`Error scraping ${link}:`, error);
+    console.error(`❌ Error scraping ${link}:`, error);
     return null;
   }
 }
@@ -186,10 +187,11 @@ async function storeContentInDatabase(
     ]);
 
     await client.query("COMMIT");
+    console.log(`📝 Successfully added to database: ${content.url}`);
     return true;
   } catch (error) {
     await client.query("ROLLBACK");
-    console.error(`Database error for ${content.url}:`, error);
+    console.error(`❌ Database error for ${content.url}:`, error);
     return false;
   } finally {
     client.release();
