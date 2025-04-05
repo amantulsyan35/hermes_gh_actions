@@ -19,9 +19,28 @@ jobs:
           node-version: "18"
 
       - name: Install dependencies
-        run: npm install cheerio pg openai
+        run: |
+          npm install cheerio pg openai
+          npm install --save-dev typescript @types/node @types/cheerio @types/pg
 
-      # No need for package.json config since we're using CommonJS
+      # Create a tsconfig.json file
+      - name: Create TypeScript config
+        run: |
+          echo '{
+            "compilerOptions": {
+              "target": "ES2020",
+              "module": "CommonJS",
+              "esModuleInterop": true,
+              "outDir": "./dist",
+              "strict": true,
+              "moduleResolution": "node"
+            },
+            "include": ["./scripts/**/*"]
+          }' > tsconfig.json
+
+      # Compile TypeScript to JavaScript
+      - name: Compile TypeScript
+        run: npx tsc
 
       # Run the web content scraper script
       - name: Run web content scraper
@@ -34,4 +53,4 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PROCESS_LIMIT: ${{ secrets.PROCESS_LIMIT }}
-        run: node scripts/fetch_web.js
+        run: node dist/scripts/fetch_web.js
