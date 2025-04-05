@@ -20,24 +20,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install cheerio pg openai pg-protocol
-          npm install --save-dev typescript @types/node @types/cheerio @types/pg
+          npm install cheerio pg openai
 
-      # Create a custom type declaration file
-      - name: Create type declaration
+      # Create JavaScript version of the script using the .mjs extension for ES modules
+      - name: Create JavaScript version
         run: |
-          mkdir -p scripts/types
-          echo '
-          declare namespace Cheerio {
-            interface Element {
-              tagName: string;
-            }
-          }
-          ' > scripts/types/cheerio.d.ts
-
-      # Compile TypeScript to JavaScript
-      - name: Compile TypeScript
-        run: npx tsc
+          # Copy TypeScript file to a JavaScript file with .mjs extension
+          cp scripts/fetch_web.ts scripts/fetch_web.mjs
+          # Replace TypeScript-specific syntax
+          sed -i 's/import { \([^}]*\) } from "\([^"]*\)";/import { \1 } from "\2";/g' scripts/fetch_web.mjs
+          sed -i 's/: [A-Za-z<>\[\]|]*//g' scripts/fetch_web.mjs
+          # Ensure it has executable permissions
+          chmod +x scripts/fetch_web.mjs
 
       # Run the web content scraper script
       - name: Run web content scraper
