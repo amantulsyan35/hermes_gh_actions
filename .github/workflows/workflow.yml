@@ -19,19 +19,15 @@ jobs:
           node-version: "18"
 
       - name: Install dependencies
-        run: |
-          npm install cheerio pg openai
+        run: npm install cheerio pg openai
 
-      # Create JavaScript version of the script using the .mjs extension for ES modules
-      - name: Create JavaScript version
+      - name: Create package.json for ES modules
         run: |
-          # Copy TypeScript file to a JavaScript file with .mjs extension
-          cp scripts/fetch_web.ts scripts/fetch_web.mjs
-          # Replace TypeScript-specific syntax
-          sed -i 's/import { \([^}]*\) } from "\([^"]*\)";/import { \1 } from "\2";/g' scripts/fetch_web.mjs
-          sed -i 's/: [A-Za-z<>\[\]|]*//g' scripts/fetch_web.mjs
-          # Ensure it has executable permissions
-          chmod +x scripts/fetch_web.mjs
+          echo '{
+            "name": "web-content-scraper",
+            "version": "1.0.0",
+            "type": "module"
+          }' > package.json
 
       # Run the web content scraper script
       - name: Run web content scraper
@@ -44,4 +40,4 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           PROCESS_LIMIT: ${{ secrets.PROCESS_LIMIT }}
-        run: node scripts/fetch_web.ts
+        run: node scripts/fetch_web.js
