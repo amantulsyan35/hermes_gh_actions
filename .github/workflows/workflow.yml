@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm install cheerio pg openai
+          npm install cheerio pg openai typescript ts-node @types/node @types/pg
 
       # Ensure you have the required directory structure
       - name: Create necessary directories
