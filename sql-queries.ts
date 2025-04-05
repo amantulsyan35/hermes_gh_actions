@@ -12,7 +12,8 @@ export const SQL = {
       consumed_at TIMESTAMP WITH TIME ZONE,
       last_updated_at TIMESTAMP WITH TIME ZONE,
       scraped_at TIMESTAMP WITH TIME ZONE,
-      is_scraped BOOLEAN DEFAULT FALSE
+      is_scraped BOOLEAN DEFAULT FALSE,
+      retry_count INTEGER DEFAULT 0
     )
   `,
 
@@ -80,4 +81,13 @@ export const SQL = {
 
   // Reporting queries
   GET_CONTENT_COUNT: "SELECT COUNT(*) as count FROM content",
+
+  GET_FAILED_SCRAPES: `
+    SELECT id, url, consumed_at 
+    FROM content 
+    WHERE is_scraped = false 
+      AND (retry_count IS NULL OR retry_count < 3)
+    ORDER BY consumed_at DESC 
+    LIMIT $1
+  `,
 };
