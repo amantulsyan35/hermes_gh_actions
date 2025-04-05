@@ -23,21 +23,17 @@ jobs:
           npm install cheerio pg openai pg-protocol
           npm install --save-dev typescript @types/node @types/cheerio @types/pg
 
-      # Create a tsconfig.json file
-      - name: Create TypeScript config
+      # Create a custom type declaration file
+      - name: Create type declaration
         run: |
-          echo '{
-            "compilerOptions": {
-              "target": "ES2020",
-              "module": "CommonJS",
-              "esModuleInterop": true,
-              "outDir": "./dist",
-              "strict": false,
-              "moduleResolution": "node",
-              "skipLibCheck": true
-            },
-            "include": ["./scripts/**/*"]
-          }' > tsconfig.json
+          mkdir -p scripts/types
+          echo '
+          declare namespace Cheerio {
+            interface Element {
+              tagName: string;
+            }
+          }
+          ' > scripts/types/cheerio.d.ts
 
       # Compile TypeScript to JavaScript
       - name: Compile TypeScript
