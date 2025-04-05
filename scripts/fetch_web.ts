@@ -1,5 +1,25 @@
 import { load } from "cheerio";
-import { createClient, Client } from "@libsql/client";
+import { Pool } from "pg";
+import OpenAI from "openai";
+import { SQL } from "../sql-queries";
+import { OpenSourceEntry } from "../types";
+
+// Initialize OpenAI client
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Initialize PostgreSQL pool
+const pool = new Pool({
+  host: process.env.POSTGRES_HOST,
+  port: 5432,
+  database: process.env.POSTGRES_DB,
+  user: process.env.POSTGRES_USER,
+  password: process.env.POSTGRES_PASSWORD,
+  ssl: {
+    rejectUnauthorized: false,
+  },
+});
 
 // Types
 interface ExtractedContent {
@@ -15,14 +35,16 @@ interface ExtractedContent {
   };
 }
 
-interface ContentItem {
-  url: string;
-  title?: string;
-  content?: string;
-  metadata?: any;
+interface ContentWithEmbedding extends ExtractedContent {
+  embedding: number[];
 }
 
-async function extractWebPageContent(link: string): Promise<ExtractedContent> {
+function formatEmbeddingForPostgres(embedding: number[]): string {
+  // Format the array for PostgreSQL vector type - should start with [
+  return `[${embedding.join(",")}]`;
+}
+
+async function extractPageContent(link: string): Promise<ExtractedContent> {
   try {
     console.log(`Fetching content for ${link}`);
 
@@ -134,7 +156,7 @@ async function extractWebPageContent(link: string): Promise<ExtractedContent> {
     return {
       title: link, // Using the URL as the title for failed pages
       url: link,
-      publishedAt: "",
+      publishedAt: null,
       fullContent: `Failed to retrieve content from ${link}.`,
       metaData: {
         ogTitle: "",
@@ -146,251 +168,184 @@ async function extractWebPageContent(link: string): Promise<ExtractedContent> {
   }
 }
 
-async function createTursoTables(client: Client): Promise<void> {
+async function generateEmbedding(text: string): Promise<number[]> {
   try {
-    console.log("Creating tables in Turso database...");
+    // Truncate text if it's too long (OpenAI has token limits)
+    const truncatedText = text.substring(0, 8000);
 
-    // Create content table
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS content (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        url TEXT UNIQUE,
-        content_type TEXT,
-        title TEXT,
-        created_at TEXT,
-        consumed_at TEXT,
-        last_updated_at TEXT,
-        scraped_at TEXT,
-        is_scraped INTEGER DEFAULT 0
-      )
-    `);
+    // Generate embedding using OpenAI API
+    const response = await openai.embeddings.create({
+      model: "text-embedding-ada-002",
+      input: truncatedText,
+    });
 
-    // Create metadata table
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS metadata (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content_id INTEGER,
-        og_title TEXT,
-        og_description TEXT,
-        og_image TEXT,
-        keywords TEXT,
-        FOREIGN KEY (content_id) REFERENCES content(id)
-      )
-    `);
-
-    // Create web table
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS web (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content_id INTEGER,
-        url TEXT,
-        published_at TEXT,
-        full_content TEXT,
-        FOREIGN KEY (content_id) REFERENCES content(id)
-      )
-    `);
-
-    // Create YouTube tables - for future use
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS youtube (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        content_id INTEGER,
-        url TEXT,
-        video_id TEXT,
-        channel_name TEXT,
-        description TEXT,
-        duration TEXT,
-        FOREIGN KEY (content_id) REFERENCES content(id)
-      )
-    `);
-
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS transcript (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        youtube_id INTEGER,
-        full_text TEXT,
-        language TEXT,
-        duration REAL,
-        fetched_at TEXT,
-        FOREIGN KEY (youtube_id) REFERENCES youtube(id)
-      )
-    `);
-
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS transcript_segments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        transcript_id INTEGER,
-        start_time TEXT,
-        end_time TEXT,
-        text TEXT,
-        FOREIGN KEY (transcript_id) REFERENCES transcript(id)
-      )
-    `);
-
-    // Create sync_history table
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS sync_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sync_time TEXT,
-        entries_added INTEGER,
-        entries_updated INTEGER,
-        entries_scraped INTEGER,
-        scrape_errors INTEGER,
-        sync_type TEXT
-      )
-    `);
-
-    console.log("Tables created successfully.");
+    return response.data[0].embedding;
   } catch (error) {
-    console.error("Error creating tables:", error);
+    console.error("Error generating embedding:", error);
     throw error;
   }
 }
 
 async function storeContentInDatabase(
-  client: Client,
-  content: ExtractedContent
+  content: ContentWithEmbedding,
+  consumedAt: string
 ): Promise<boolean> {
+  const client = await pool.connect();
+
   try {
     const currentTime = new Date().toISOString();
+    const consumedTimestamp = consumedAt || null;
 
-    // Insert into content table
-    const contentResult = await client.execute({
-      sql: `
-        INSERT INTO content (url, content_type, title, created_at, scraped_at, is_scraped)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      args: [content.url, "web", content.title, currentTime, currentTime, 1],
-    });
+    // Begin transaction
+    await client.query("BEGIN");
 
-    if (!contentResult.lastInsertRowid) {
-      console.error(`Failed to insert content for ${content.url}`);
+    // Check if URL already exists
+    const existingResult = await client.query(SQL.CHECK_URL_EXISTS, [
+      content.url,
+    ]);
+
+    if (existingResult.rows.length > 0) {
+      console.log(`URL already exists: ${content.url} - skipping`);
+      await client.query("COMMIT");
       return false;
     }
 
-    const contentId = Number(contentResult.lastInsertRowid);
-
-    // Insert into web table
-    await client.execute({
-      sql: `
-        INSERT INTO web (content_id, url, published_at, full_content)
-        VALUES (?, ?, ?, ?)
-      `,
-      args: [
-        contentId,
+    // Insert into content table
+    const contentResult = await client.query(
+      `INSERT INTO content 
+      (url, content_type, title, created_at, consumed_at, scraped_at, is_scraped)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING id`,
+      [
         content.url,
-        content.publishedAt || null,
-        content.fullContent,
-      ],
-    });
+        "web",
+        content.title,
+        currentTime,
+        consumedTimestamp, // Store the createdAt as consumedAt
+        currentTime,
+        true,
+      ]
+    );
+
+    const contentId = contentResult.rows[0].id;
+
+    // Format the embedding properly for PostgreSQL
+    const formattedEmbedding = formatEmbeddingForPostgres(content.embedding);
+
+    // Insert into web table with properly formatted embedding
+    await client.query(SQL.INSERT_WEB, [
+      contentId,
+      content.url,
+      content.publishedAt,
+      content.fullContent,
+      formattedEmbedding, // Use the formatted embedding
+    ]);
 
     // Insert into metadata table
-    await client.execute({
-      sql: `
-        INSERT INTO metadata (content_id, og_title, og_description, og_image, keywords)
-        VALUES (?, ?, ?, ?, ?)
-      `,
-      args: [
-        contentId,
-        content.metaData.ogTitle,
-        content.metaData.ogDescription,
-        content.metaData.ogImage,
-        content.metaData.keywords,
-      ],
-    });
+    await client.query(SQL.INSERT_METADATA, [
+      contentId,
+      content.metaData.ogTitle,
+      content.metaData.ogDescription,
+      content.metaData.ogImage,
+      content.metaData.keywords,
+    ]);
+
+    // Commit transaction
+    await client.query("COMMIT");
 
     console.log(`Successfully added entry for ${content.url}`);
     return true;
   } catch (error) {
+    // Rollback in case of error
+    await client.query("ROLLBACK");
     console.error(`Database error for ${content.url}:`, error);
     return false;
+  } finally {
+    client.release();
   }
 }
 
 async function processURLs(
-  urls: string[],
+  entries: OpenSourceEntry[],
   limit: number = 10
-): Promise<{ added: number; errors: number }> {
-  // Limit to first N URLs for testing if needed
-  const urlsToProcess = urls.slice(0, limit);
-  console.log(`Processing ${urlsToProcess.length} URLs (limit: ${limit})`);
+): Promise<{ added: number; errors: number; skipped: number }> {
+  // Limit to first N entries if needed
+  const entriesToProcess = entries.slice(0, limit);
+  console.log(`Processing ${entriesToProcess.length} URLs (limit: ${limit})`);
 
   let addedCount = 0;
   let errorCount = 0;
-
-  // Create Turso client
-  const tursoUrl = process.env.TURSO_URL as string;
-  const tursoAuthToken = process.env.TURSO_AUTH_TOKEN;
-
-  if (!tursoAuthToken) {
-    throw new Error("TURSO_AUTH_TOKEN environment variable is required");
-  }
-
-  console.log(`Connecting to Turso database: ${tursoUrl}`);
-
-  const client = createClient({
-    url: tursoUrl,
-    authToken: tursoAuthToken,
-  });
+  let skippedCount = 0;
 
   try {
-    // Create tables if they don't exist
-    await createTursoTables(client);
-
-    // Process each URL
-    for (const url of urlsToProcess) {
+    // Process each entry
+    for (const entry of entriesToProcess) {
       try {
+        const url = entry.url;
+
         // Check if URL already exists
-        const existingResult = await client.execute({
-          sql: "SELECT id FROM content WHERE url = ?",
-          args: [url],
-        });
+        const client = await pool.connect();
+        const existingResult = await client.query(SQL.CHECK_URL_EXISTS, [url]);
+        client.release();
 
         if (existingResult.rows.length > 0) {
           console.log(`URL already exists: ${url}`);
+          skippedCount++;
           continue;
         }
 
-        // Extract content
-        const content = await extractWebPageContent(url);
+        // 1. Extract content
+        const content = await extractPageContent(url);
 
-        // Store in database
-        const success = await storeContentInDatabase(client, content);
+        // 2. Generate embedding from content
+        const embedding = await generateEmbedding(content.fullContent);
+
+        // 3. Store in database with embedding
+        const contentWithEmbedding: ContentWithEmbedding = {
+          ...content,
+          embedding,
+        };
+
+        // Pass the createdAt timestamp to be used as consumedAt
+        const success = await storeContentInDatabase(
+          contentWithEmbedding,
+          entry.createdAt
+        );
 
         if (success) {
           addedCount++;
         } else {
-          errorCount++;
+          skippedCount++;
         }
       } catch (error) {
-        console.error(`Error processing ${url}:`, error);
+        console.error(`Error processing ${entry.url}:`, error);
         errorCount++;
       }
     }
 
     // Add entry to sync_history
+    const client = await pool.connect();
     const currentTime = new Date().toISOString();
-    await client.execute({
-      sql: `
-        INSERT INTO sync_history (
-          sync_time, entries_added, entries_updated, entries_scraped, scrape_errors, sync_type
-        ) VALUES (?, ?, ?, ?, ?, ?)
-      `,
-      args: [currentTime, addedCount, 0, addedCount, errorCount, "api_fetch"],
-    });
+    await client.query(SQL.INSERT_SYNC_HISTORY, [
+      currentTime,
+      addedCount,
+      0,
+      addedCount,
+      errorCount,
+      "api_fetch",
+    ]);
 
     // Get the count of content entries
-    const countResult = await client.execute(
-      "SELECT COUNT(*) as count FROM content"
-    );
+    const countResult = await client.query(SQL.GET_CONTENT_COUNT);
     const contentCount = countResult.rows[0].count;
     console.log(`Current content entries in database: ${contentCount}`);
+    client.release();
   } catch (error) {
     console.error("Error during execution:", error);
     throw error;
   }
 
-  return { added: addedCount, errors: errorCount };
+  return { added: addedCount, errors: errorCount, skipped: skippedCount };
 }
 
 // Main function to fetch and process content
@@ -400,32 +355,51 @@ async function main() {
       process.env.API_ENDPOINT || "https://open-source-content.xyz/v1/web";
     console.log(`Fetching web content from ${apiEndpoint}...`);
 
-    // Fetch the list of URLs from the API
+    // Fetch the list of entries from the API
     const response = await fetch(apiEndpoint);
     const data = await response.json();
 
-    // Extract URLs from the data
-    let urls: string[] = [];
+    // Extract entries from the data
+    let entries: OpenSourceEntry[] = [];
     if (data && data.data && Array.isArray(data.data)) {
-      urls = data.data.filter((url: string) => typeof url === "string");
+      // Filter to ensure we have valid entries (with url field)
+      entries = data.data.filter(
+        (entry: any) =>
+          typeof entry === "object" &&
+          entry !== null &&
+          typeof entry.url === "string"
+      );
+
+      // Filter out YouTube URLs
+      entries = entries.filter(
+        (entry: OpenSourceEntry) =>
+          !entry.url.includes("youtube.com") && !entry.url.includes("youtu.be")
+      );
     }
 
-    if (urls.length === 0) {
-      console.log("No URLs found in API response");
+    if (entries.length === 0) {
+      console.log("No valid entries found in API response");
       return;
     }
 
-    console.log(`Found ${urls.length} URLs`);
+    console.log(`Found ${entries.length} valid entries`);
 
-    // Process the URLs (limit to 10 for testing)
-    const result = await processURLs(urls, 10);
+    // Process the entries (limit to desired number)
+    const processLimit = process.env.PROCESS_LIMIT
+      ? parseInt(process.env.PROCESS_LIMIT)
+      : 10;
+
+    const result = await processURLs(entries, processLimit);
 
     console.log(
-      `Added ${result.added} new entries with ${result.errors} errors`
+      `Added ${result.added} new entries, skipped ${result.skipped}, with ${result.errors} errors`
     );
   } catch (error) {
     console.error("Error in main function:", error);
     process.exit(1);
+  } finally {
+    // Close the pool when done
+    await pool.end();
   }
 }
 

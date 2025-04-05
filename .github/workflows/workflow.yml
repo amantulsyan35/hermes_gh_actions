@@ -1,46 +1,40 @@
-# name: Sync Content
+name: Sync Content
 
-# on:
-#   schedule:
-#     - cron: "0 0 * * *" # Run daily at midnight
-#   workflow_dispatch: # Allow manual triggering
+on:
+  schedule:
+    - cron: "0 0 * * *" # Run daily at midnight
+  workflow_dispatch: # Allow manual triggering
 
-# jobs:
-#   fetch-and-store-web-content:
-#     runs-on: ubuntu-latest
+jobs:
+  fetch-and-store-web-content:
+    runs-on: ubuntu-latest
 
-#     steps:
-#       - name: Checkout repository
-#         uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-#       - name: Set up Python
-#         uses: actions/setup-python@v5
-#         with:
-#           python-version: "3.10"
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18"
 
-#       - name: Install dependencies
-#         run: |
-#           python -m pip install --upgrade pip
-#           pip install requests beautifulsoup4 libsql-experimental
+      - name: Install dependencies
+        run: |
+          npm install cheerio pg openai
 
-#       # Ensure the data directory exists
-#       - name: Create data directory
-#         run: mkdir -p data
+      # Ensure you have the required directory structure
+      - name: Create necessary directories
+        run: mkdir -p scripts
 
-#       # Run Web content fetcher script
-#       - name: Run Web content fetcher script
-#         env:
-#           API_ENDPOINT: "https://open-source-content.xyz/v1/web"
-#           TURSO_URL: "libsql://context-amantulsyan35.aws-us-east-1.turso.io"
-#           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
-#         run: python scripts/fetch_web.py
-
-#       # Upload local cache and results as artifacts (for backup)
-#       - name: Upload processed data
-#         uses: actions/upload-artifact@v4
-#         with:
-#           name: processed-data
-#           path: |
-#             local.db
-#             data/processed_weblinks.json
-#           retention-days: 5
+      # Run the web content scraper script
+      - name: Run web content scraper
+        env:
+          API_ENDPOINT: "https://open-source-content.xyz/v1/web"
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PORT: "5432"
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PROCESS_LIMIT: ${{ secrets.PROCESS_LIMIT }}
+        run: node scripts/fetch_web.ts

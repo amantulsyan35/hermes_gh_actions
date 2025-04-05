@@ -15,6 +15,11 @@
     "@types/node": "^22.13.14",
     "cheerio": "^1.0.0",
     "node-fetch": "^3.3.2",
+    "openai": "^4.91.1",
+    "pg": "^8.14.1",
     "typescript": "^5.8.2"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.11"
   }
 }
