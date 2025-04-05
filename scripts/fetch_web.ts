@@ -112,7 +112,8 @@ async function extractPageContent(link: string): Promise<ExtractedContent> {
 
       // Get heading elements with their hierarchy
       $("h1, h2, h3, h4, h5, h6").each((_, element) => {
-        const tagName = element.tagName.toLowerCase();
+        // ANY: because fucking typescript
+        const tagName = (element as any).tagName.toLowerCase();
         const level = parseInt(tagName.substring(1));
         const prefix = "#".repeat(level) + " ";
         fullContent += prefix + $(element).text().trim() + "\n\n";
