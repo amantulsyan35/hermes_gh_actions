@@ -279,8 +279,7 @@ async function processURLs(
   limit: number = 10
 ): Promise<{ added: number; errors: number; skipped: number }> {
   // Limit to first N entries if needed
-  const entriesToProcess = entries.slice(0, limit);
-  console.log(`Processing ${entriesToProcess.length} URLs (limit: ${limit})`);
+  console.log(`Processing up to ${limit} new entries...`);
 
   let addedCount = 0;
   let errorCount = 0;
@@ -288,7 +287,9 @@ async function processURLs(
 
   try {
     // Process each entry
-    for (const entry of entriesToProcess) {
+    for (const entry of entries) {
+      if (addedCount >= limit) break;
+
       try {
         const url = entry.url;
 
@@ -306,16 +307,15 @@ async function processURLs(
         // 1. Extract content
         const content = await extractPageContent(url);
 
-        // 2. Generate embedding from content
+        // 2. Generate embedding
         const embedding = await generateEmbedding(content.fullContent);
 
-        // 3. Store in database with embedding
+        // 3. Store in DB
         const contentWithEmbedding: ContentWithEmbedding = {
           ...content,
           embedding,
         };
 
-        // Pass the createdAt timestamp to be used as consumedAt
         const success = await storeContentInDatabase(
           contentWithEmbedding,
           entry.createdAt
